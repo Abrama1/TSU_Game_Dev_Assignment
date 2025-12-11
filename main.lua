@@ -5,6 +5,7 @@ local Wall        = require("wall")
 local Animation   = require("animation")
 local Button      = require("button")
 local HeartPickup = require("heartpickup")
+local HitEffect   = require("hiteffect")
 
 local WINDOW_WIDTH  = 800
 local WINDOW_HEIGHT = 600
@@ -53,6 +54,7 @@ local enemy
 local coin
 local walls = {}
 local hearts = {}              -- list of heart pickups
+local effects = {}             -- list of hit/coin/heart particle effects
 local score = 0
 local gameOver = false
 
@@ -63,6 +65,9 @@ local enemySpeedMultiplier = 1.0  -- increases per coin during a run
 
 -- menu buttons
 local menuButtons = {}
+
+-- sounds
+local sounds = {}
 
 -- ==========================
 -- Utility
@@ -139,9 +144,17 @@ local function startGame(difficultyKey)
     }
 
     coin = spawnCoin()
-    hearts = {}   -- clear any hearts from previous run
+    hearts = {}
+    effects = {}
 
     gameState = "game"
+end
+
+local function addEffectBurst(x, y, kind, count)
+    count = count or 6
+    for _ = 1, count do
+        table.insert(effects, HitEffect:new(x, y, kind))
+    end
 end
 
 -- ==========================
@@ -210,11 +223,27 @@ function love.load()
         Button:new(centerX, startY + gap,   btnW, btnH, "Normal", function() startGame("normal") end),
         Button:new(centerX, startY + gap*2, btnW, btnH, "Hard",   function() startGame("hard")   end),
     }
+
+    -- load sounds (ensure these files exist in assets/)
+    sounds.swordSwing   = love.audio.newSource("assets/sword_swing.wav", "static")
+    sounds.enemySwing   = love.audio.newSource("assets/enemy_swing.wav", "static")
+    sounds.enemySwing:setLooping(true)
+    sounds.coinPickup   = love.audio.newSource("assets/coin_pickup.wav", "static")
+    sounds.heartPickup  = love.audio.newSource("assets/heart_pickup.wav", "static")
 end
 
 function love.update(dt)
     if love.keyboard.isDown("escape") then
         love.event.quit()
+    end
+
+    -- if not actively in gameplay, ensure enemy swing is stopped
+    if sounds.enemySwing then
+        if gameState ~= "game" or gameOver then
+            if sounds.enemySwing:isPlaying() then
+                sounds.enemySwing:stop()
+            end
+        end
     end
 
     if gameState ~= "game" then
@@ -229,6 +258,20 @@ function love.update(dt)
 
     for _, heart in ipairs(hearts) do
         heart:update(dt)
+    end
+
+    for _, eff in ipairs(effects) do
+        eff:update(dt)
+    end
+
+    -- cleanup dead effects
+    local i = 1
+    while i <= #effects do
+        if effects[i]:isDead() then
+            table.remove(effects, i)
+        else
+            i = i + 1
+        end
     end
 
     -- Enemy respawn logic (keeping speed multiplier)
@@ -250,7 +293,17 @@ function love.update(dt)
     if player:isAttacking() and not enemy:isDead() then
         local atkBox = player:getAttackHitbox()
         if rectsOverlap(atkBox, eBox) then
+            local enemyWasDead = enemy:isDead()
             enemy:takeHit(1)
+
+            -- spawn hit or death effects at enemy center
+            local hitX = eBox.x + eBox.w / 2
+            local hitY = eBox.y + eBox.h / 2
+            if enemy:isDead() and not enemyWasDead then
+                addEffectBurst(hitX, hitY, "death", 10)
+            else
+                addEffectBurst(hitX, hitY, "hit", 6)
+            end
         end
     end
 
@@ -277,6 +330,14 @@ function love.update(dt)
     if circleRectOverlap(coin.x, coin.y, coin.radius, pBox) then
         score = score + 1
 
+        if sounds.coinPickup then
+            sounds.coinPickup:stop()
+            sounds.coinPickup:play()
+        end
+
+        -- coin pickup particles
+        addEffectBurst(coin.x, coin.y, "coin", 8)
+
         -- enemy moves faster per coin during this run (difficulty-based)
         local cfg = difficulties[currentDifficulty]
         enemySpeedMultiplier = enemySpeedMultiplier * cfg.speedGainPerCoin
@@ -296,17 +357,39 @@ function love.update(dt)
 
     -- player vs hearts
     if player.hp < player:getMaxHp() and #hearts > 0 then
-        -- hearts are circular; reuse circleRectOverlap
         local maxHp = player:getMaxHp()
-        local i = 1
-        while i <= #hearts do
-            local heart = hearts[i]
+        local j = 1
+        while j <= #hearts do
+            local heart = hearts[j]
             if circleRectOverlap(heart.x, heart.y, heart.radius, pBox) then
                 player.hp = math.min(maxHp, player.hp + 1)
-                table.remove(hearts, i)
-                -- do not increment i, we removed current index
+
+                if sounds.heartPickup then
+                    sounds.heartPickup:stop()
+                    sounds.heartPickup:play()
+                elseif sounds.coinPickup then
+                    -- fallback: use coin sound
+                    sounds.coinPickup:stop()
+                    sounds.coinPickup:play()
+                end
+
+                addEffectBurst(heart.x, heart.y, "heart", 8)
+                table.remove(hearts, j)
             else
-                i = i + 1
+                j = j + 1
+            end
+        end
+    end
+
+    -- control enemy swing loop based on state
+    if sounds.enemySwing then
+        if enemy:isDead() or enemy.state ~= "attacking" then
+            if sounds.enemySwing:isPlaying() then
+                sounds.enemySwing:stop()
+            end
+        else
+            if not sounds.enemySwing:isPlaying() then
+                sounds.enemySwing:play()
             end
         end
     end
@@ -315,6 +398,10 @@ end
 function love.keypressed(key)
     if gameState == "game" then
         if key == "space" and not gameOver then
+            if sounds.swordSwing then
+                sounds.swordSwing:stop()
+                sounds.swordSwing:play()
+            end
             player:startAttack()
         end
 
@@ -393,6 +480,11 @@ function love.draw()
     end
     enemy:draw()
     player:draw()
+
+    -- particle effects
+    for _, eff in ipairs(effects) do
+        eff:draw()
+    end
 
     -- UI bar
     love.graphics.setColor(0, 0, 0, 0.5)
