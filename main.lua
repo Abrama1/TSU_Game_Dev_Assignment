@@ -19,6 +19,9 @@ local ENEMY_RESPAWN_DELAY = 2.0  -- seconds after death before enemy respawns
 -- chance that a heart spawns when picking up a coin (if HP < max and no heart present)
 local HEART_SPAWN_CHANCE = 0.25
 
+-- swing sound timing (seconds between whooshes while attacking)
+local ENEMY_SWING_INTERVAL = 0.62
+
 -- game state
 local gameState = "menu"  -- "menu" | "game"
 local currentDifficulty = nil
@@ -42,7 +45,7 @@ local difficulties = {
     }
 }
 
--- per-difficulty best scores (in memory; persistence later)
+-- per-difficulty best scores (in memory; persistence only for this run)
 local bestScores = {
     easy   = 0,
     normal = 0,
@@ -68,6 +71,7 @@ local menuButtons = {}
 
 -- sounds
 local sounds = {}
+local enemySwingTimer = 0
 
 -- ==========================
 -- Utility
@@ -131,6 +135,7 @@ local function startGame(difficultyKey)
     gameOver = false
     enemySpeedMultiplier = 1.0
     enemyRespawnTimer = 0
+    enemySwingTimer = 0
 
     player = Player:new(WINDOW_WIDTH * 0.25, WINDOW_HEIGHT * 0.5, playerAnims)
     enemy  = spawnEnemy()
@@ -227,7 +232,6 @@ function love.load()
     -- load sounds (ensure these files exist in assets/)
     sounds.swordSwing   = love.audio.newSource("assets/sword_swing.wav", "static")
     sounds.enemySwing   = love.audio.newSource("assets/enemy_swing.wav", "static")
-    sounds.enemySwing:setLooping(true)
     sounds.coinPickup   = love.audio.newSource("assets/coin_pickup.wav", "static")
     sounds.heartPickup  = love.audio.newSource("assets/heart_pickup.wav", "static")
 end
@@ -237,13 +241,12 @@ function love.update(dt)
         love.event.quit()
     end
 
-    -- if not actively in gameplay, ensure enemy swing is stopped
-    if sounds.enemySwing then
-        if gameState ~= "game" or gameOver then
-            if sounds.enemySwing:isPlaying() then
-                sounds.enemySwing:stop()
-            end
+    -- if not actively in gameplay, ensure enemy swing is stopped & timer reset
+    if gameState ~= "game" or gameOver then
+        if sounds.enemySwing and sounds.enemySwing:isPlaying() then
+            sounds.enemySwing:stop()
         end
+        enemySwingTimer = 0
     end
 
     if gameState ~= "game" then
@@ -381,15 +384,19 @@ function love.update(dt)
         end
     end
 
-    -- control enemy swing loop based on state
+    -- enemy swing sound: pulse while attacking
     if sounds.enemySwing then
         if enemy:isDead() or enemy.state ~= "attacking" then
             if sounds.enemySwing:isPlaying() then
                 sounds.enemySwing:stop()
             end
+            enemySwingTimer = 0
         else
-            if not sounds.enemySwing:isPlaying() then
+            enemySwingTimer = enemySwingTimer - dt
+            if enemySwingTimer <= 0 then
+                sounds.enemySwing:stop()
                 sounds.enemySwing:play()
+                enemySwingTimer = ENEMY_SWING_INTERVAL
             end
         end
     end
