@@ -20,7 +20,10 @@ local ENEMY_RESPAWN_DELAY = 2.0  -- seconds after death before enemy respawns
 local HEART_SPAWN_CHANCE = 0.25
 
 -- swing sound timing (seconds between whooshes while attacking)
-local ENEMY_SWING_INTERVAL = 0.62
+local ENEMY_SWING_INTERVAL = 0.6
+
+-- how much speed multiplier counts as "max danger" visually
+local DANGER_MAX_MULT = 2.0
 
 -- game state
 local gameState = "menu"  -- "menu" | "game"
@@ -525,6 +528,38 @@ function love.draw()
         love.graphics.circle("fill", offsetX + (i - 1) * 20, 20, 7)
     end
     love.graphics.setColor(1, 1, 1)
+
+    -- Danger bar (enemy speed / threat)
+    do
+        local barX, barY, barW, barH = 580, 10, 200, 20
+
+        -- background
+        love.graphics.setColor(0.12, 0.12, 0.17)
+        love.graphics.rectangle("fill", barX, barY, barW, barH)
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.rectangle("line", barX, barY, barW, barH)
+
+        -- compute level 0..1 from enemySpeedMultiplier
+        local level = 0
+        if currentDifficulty then
+            level = (enemySpeedMultiplier - 1.0) / (DANGER_MAX_MULT - 1.0)
+            if level < 0 then level = 0 end
+            if level > 1 then level = 1 end
+        end
+
+        if level > 0 then
+            local fillW = barW * level
+            -- lerp color: green -> red
+            local r = 0.2 + 0.8 * level
+            local g = 0.9 - 0.7 * level
+            local b = 0.2
+            love.graphics.setColor(r, g, b)
+            love.graphics.rectangle("fill", barX + 1, barY + 1, fillW - 2, barH - 2)
+            love.graphics.setColor(1, 1, 1)
+        end
+
+        love.graphics.print("Danger", barX, barY - 12)
+    end
 
     love.graphics.print(
         "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)",
