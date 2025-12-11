@@ -1,9 +1,10 @@
-local Player    = require("player")
-local Enemy     = require("enemy")
-local Coin      = require("coin")
-local Wall      = require("wall")
-local Animation = require("animation")
-local Button    = require("button")
+local Player      = require("player")
+local Enemy       = require("enemy")
+local Coin        = require("coin")
+local Wall        = require("wall")
+local Animation   = require("animation")
+local Button      = require("button")
+local HeartPickup = require("heartpickup")
 
 local WINDOW_WIDTH  = 800
 local WINDOW_HEIGHT = 600
@@ -14,6 +15,9 @@ local ENEMY_FRAME_SIZE    = 100
 
 local ENEMY_RESPAWN_DELAY = 2.0  -- seconds after death before enemy respawns
 
+-- chance that a heart spawns when picking up a coin (if HP < max and no heart present)
+local HEART_SPAWN_CHANCE = 0.25
+
 -- game state
 local gameState = "menu"  -- "menu" | "game"
 local currentDifficulty = nil
@@ -22,22 +26,22 @@ local currentDifficulty = nil
 local difficulties = {
     easy = {
         label = "Easy",
-        baseEnemySpeed = 60,
+        baseEnemySpeed   = 60,
         speedGainPerCoin = 1.015,
     },
     normal = {
         label = "Normal",
-        baseEnemySpeed = 70,
+        baseEnemySpeed   = 70,
         speedGainPerCoin = 1.02,
     },
     hard = {
         label = "Hard",
-        baseEnemySpeed = 80,
+        baseEnemySpeed   = 80,
         speedGainPerCoin = 1.03,
     }
 }
 
--- per-difficulty best scores (in memory for now; persistence later)
+-- per-difficulty best scores (in memory; persistence later)
 local bestScores = {
     easy   = 0,
     normal = 0,
@@ -48,6 +52,7 @@ local player
 local enemy
 local coin
 local walls = {}
+local hearts = {}              -- list of heart pickups
 local score = 0
 local gameOver = false
 
@@ -82,7 +87,7 @@ local function randomInRange(minv, maxv)
 end
 
 -- middle box collision
-local function coinIsInsideMiddleBox(x, y)
+local function isInsideMiddleBox(x, y)
     return x > 360 and x < 360 + 80 and
            y > 260 and y < 260 + 80
 end
@@ -92,9 +97,19 @@ local function spawnCoin()
     repeat
         x = randomInRange(180, WINDOW_WIDTH - 180)
         y = randomInRange(140, WINDOW_HEIGHT - 140)
-    until not coinIsInsideMiddleBox(x, y)
+    until not isInsideMiddleBox(x, y)
 
     return Coin:new(x, y)
+end
+
+local function spawnHeart()
+    local x, y
+    repeat
+        x = randomInRange(180, WINDOW_WIDTH - 180)
+        y = randomInRange(140, WINDOW_HEIGHT - 140)
+    until not isInsideMiddleBox(x, y)
+
+    return HeartPickup:new(x, y)
 end
 
 local function spawnEnemy()
@@ -106,7 +121,6 @@ end
 
 local function startGame(difficultyKey)
     currentDifficulty = difficultyKey
-    local cfg = difficulties[currentDifficulty]
 
     score = 0
     gameOver = false
@@ -125,6 +139,7 @@ local function startGame(difficultyKey)
     }
 
     coin = spawnCoin()
+    hearts = {}   -- clear any hearts from previous run
 
     gameState = "game"
 end
@@ -154,7 +169,7 @@ function love.load()
     local enemyDeathImg  = love.graphics.newImage("assets/death.png")
     local enemySummonImg = love.graphics.newImage("assets/summon.png")
 
-    -- attacking.png: 13 frames, 3 rows (6,6,1) framesPerRow = 6
+    -- attacking.png: 13 frames, 3 rows (6,6,1)
     enemyAnims.attacking = Animation:new(
         enemyAttackImg,
         ENEMY_FRAME_SIZE, ENEMY_FRAME_SIZE,
@@ -164,7 +179,7 @@ function love.load()
         true
     )
 
-    -- death.png: 18 frames (10 in row1, 8 in row2), 100x100 each
+    -- death.png: 18 frames (10 row1, 8 row2)
     enemyAnims.death = Animation:new(
         enemyDeathImg,
         ENEMY_FRAME_SIZE, ENEMY_FRAME_SIZE,
@@ -174,7 +189,7 @@ function love.load()
         false
     )
 
-    -- summon.png: 5 frames (4 row1, 1 row2) framesPerRow = 4
+    -- summon.png: 5 frames (4 row1, 1 row2)
     enemyAnims.summon = Animation:new(
         enemySummonImg,
         ENEMY_FRAME_SIZE, ENEMY_FRAME_SIZE,
@@ -191,15 +206,9 @@ function love.load()
     local centerX = WINDOW_WIDTH / 2 - btnW / 2
 
     menuButtons = {
-        require("button"):new(centerX, startY, btnW, btnH, "Easy", function()
-            startGame("easy")
-        end),
-        require("button"):new(centerX, startY + gap, btnW, btnH, "Normal", function()
-            startGame("normal")
-        end),
-        require("button"):new(centerX, startY + gap * 2, btnW, btnH, "Hard", function()
-            startGame("hard")
-        end),
+        Button:new(centerX, startY,         btnW, btnH, "Easy",   function() startGame("easy")   end),
+        Button:new(centerX, startY + gap,   btnW, btnH, "Normal", function() startGame("normal") end),
+        Button:new(centerX, startY + gap*2, btnW, btnH, "Hard",   function() startGame("hard")   end),
     }
 end
 
@@ -217,6 +226,10 @@ function love.update(dt)
     player:update(dt, walls)
     enemy:update(dt, player, walls)
     coin:update(dt)
+
+    for _, heart in ipairs(hearts) do
+        heart:update(dt)
+    end
 
     -- Enemy respawn logic (keeping speed multiplier)
     if enemy:isDead() then
@@ -271,7 +284,31 @@ function love.update(dt)
             enemy.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
         end
 
+        -- possibly spawn a heart if player is missing HP and no heart exists
+        if player.hp < player:getMaxHp() and #hearts == 0 then
+            if math.random() < HEART_SPAWN_CHANCE then
+                table.insert(hearts, spawnHeart())
+            end
+        end
+
         coin = spawnCoin()
+    end
+
+    -- player vs hearts
+    if player.hp < player:getMaxHp() and #hearts > 0 then
+        -- hearts are circular; reuse circleRectOverlap
+        local maxHp = player:getMaxHp()
+        local i = 1
+        while i <= #hearts do
+            local heart = hearts[i]
+            if circleRectOverlap(heart.x, heart.y, heart.radius, pBox) then
+                player.hp = math.min(maxHp, player.hp + 1)
+                table.remove(hearts, i)
+                -- do not increment i, we removed current index
+            else
+                i = i + 1
+            end
+        end
     end
 end
 
@@ -314,9 +351,9 @@ function love.draw()
         -- show best scores for each difficulty
         local infoY = 160
         love.graphics.print(
-            string.format("Easy: %d   Normal: %d   Hard: %d",
+            string.format("Best (Easy): %d   Best (Normal): %d   Best (Hard): %d",
                 bestScores.easy, bestScores.normal, bestScores.hard),
-            WINDOW_WIDTH / 2 - 90,
+            WINDOW_WIDTH / 2 - 220,
             infoY
         )
 
@@ -349,7 +386,11 @@ function love.draw()
         wall:draw()
     end
 
+    -- pickups + entities
     coin:draw()
+    for _, heart in ipairs(hearts) do
+        heart:draw()
+    end
     enemy:draw()
     player:draw()
 
