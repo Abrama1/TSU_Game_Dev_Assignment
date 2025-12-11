@@ -3,6 +3,7 @@ local Enemy     = require("enemy")
 local Coin      = require("coin")
 local Wall      = require("wall")
 local Animation = require("animation")
+local Button    = require("button")
 
 local WINDOW_WIDTH  = 800
 local WINDOW_HEIGHT = 600
@@ -12,20 +13,51 @@ local PLAYER_FRAME_SIZE   = 96
 local ENEMY_FRAME_SIZE    = 100
 
 local ENEMY_RESPAWN_DELAY = 2.0  -- seconds after death before enemy respawns
-local BASE_ENEMY_SPEED    = 70
+
+-- game state
+local gameState = "menu"  -- "menu" | "game"
+local currentDifficulty = nil
+
+-- difficulties config
+local difficulties = {
+    easy = {
+        label = "Easy",
+        baseEnemySpeed = 60,
+        speedGainPerCoin = 1.015,
+    },
+    normal = {
+        label = "Normal",
+        baseEnemySpeed = 70,
+        speedGainPerCoin = 1.02,
+    },
+    hard = {
+        label = "Hard",
+        baseEnemySpeed = 80,
+        speedGainPerCoin = 1.03,
+    }
+}
+
+-- per-difficulty best scores (in memory for now; persistence later)
+local bestScores = {
+    easy   = 0,
+    normal = 0,
+    hard   = 0,
+}
 
 local player
 local enemy
 local coin
 local walls = {}
 local score = 0
-local bestScore = 0           -- session high score
 local gameOver = false
 
 local playerAnims = {}
 local enemyAnims  = {}
 local enemyRespawnTimer = 0
-local enemySpeedMultiplier = 1.0  -- increases +2% per coin during a run
+local enemySpeedMultiplier = 1.0  -- increases per coin during a run
+
+-- menu buttons
+local menuButtons = {}
 
 -- ==========================
 -- Utility
@@ -66,9 +98,35 @@ local function spawnCoin()
 end
 
 local function spawnEnemy()
+    local cfg = difficulties[currentDifficulty]
     local e = Enemy:new(WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.5, enemyAnims)
-    e.speed = BASE_ENEMY_SPEED * enemySpeedMultiplier
+    e.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
     return e
+end
+
+local function startGame(difficultyKey)
+    currentDifficulty = difficultyKey
+    local cfg = difficulties[currentDifficulty]
+
+    score = 0
+    gameOver = false
+    enemySpeedMultiplier = 1.0
+    enemyRespawnTimer = 0
+
+    player = Player:new(WINDOW_WIDTH * 0.25, WINDOW_HEIGHT * 0.5, playerAnims)
+    enemy  = spawnEnemy()
+
+    walls = {
+        Wall:new(150, 100, 500, 20),
+        Wall:new(150, 480, 500, 20),
+        Wall:new(150, 100, 20, 400),
+        Wall:new(630, 100, 20, 400),
+        Wall:new(360, 260, 80, 80)  -- middle box
+    }
+
+    coin = spawnCoin()
+
+    gameState = "game"
 end
 
 -- ==========================
@@ -106,7 +164,7 @@ function love.load()
         true
     )
 
-    -- death.png: 10 frames,  1 row of 10 at 100x100 each
+    -- death.png: 18 frames (10 in row1, 8 in row2), 100x100 each
     enemyAnims.death = Animation:new(
         enemyDeathImg,
         ENEMY_FRAME_SIZE, ENEMY_FRAME_SIZE,
@@ -126,29 +184,32 @@ function love.load()
         false
     )
 
-    -- Entities
-    player = Player:new(WINDOW_WIDTH * 0.25, WINDOW_HEIGHT * 0.5, playerAnims)
+    -- create menu buttons
+    local btnW, btnH = 200, 50
+    local startY = WINDOW_HEIGHT / 2 - 80
+    local gap = 60
+    local centerX = WINDOW_WIDTH / 2 - btnW / 2
 
-    enemySpeedMultiplier = 1.0
-    enemy = spawnEnemy()
-
-    walls = {
-        Wall:new(150, 100, 500, 20),
-        Wall:new(150, 480, 500, 20),
-        Wall:new(150, 100, 20, 400),
-        Wall:new(630, 100, 20, 400),
-        Wall:new(360, 260, 80, 80)  -- middle box
+    menuButtons = {
+        require("button"):new(centerX, startY, btnW, btnH, "Easy", function()
+            startGame("easy")
+        end),
+        require("button"):new(centerX, startY + gap, btnW, btnH, "Normal", function()
+            startGame("normal")
+        end),
+        require("button"):new(centerX, startY + gap * 2, btnW, btnH, "Hard", function()
+            startGame("hard")
+        end),
     }
-
-    coin = spawnCoin()
-    enemyRespawnTimer = 0
-    score = 0
-    gameOver = false
 end
 
 function love.update(dt)
     if love.keyboard.isDown("escape") then
         love.event.quit()
+    end
+
+    if gameState ~= "game" then
+        return
     end
 
     if gameOver then return end
@@ -190,9 +251,9 @@ function love.update(dt)
         enemy.attackCooldown = 0.8
         player:takeHit()
         if player:isDead() then
-            -- update best score when the run ends
-            if score > bestScore then
-                bestScore = score
+            -- update best score when the run ends (per difficulty)
+            if score > bestScores[currentDifficulty] then
+                bestScores[currentDifficulty] = score
             end
             gameOver = true
             enemy:setState("death")
@@ -203,10 +264,11 @@ function love.update(dt)
     if circleRectOverlap(coin.x, coin.y, coin.radius, pBox) then
         score = score + 1
 
-        -- enemy moves 2% faster per coin during this run
-        enemySpeedMultiplier = enemySpeedMultiplier * 1.02
+        -- enemy moves faster per coin during this run (difficulty-based)
+        local cfg = difficulties[currentDifficulty]
+        enemySpeedMultiplier = enemySpeedMultiplier * cfg.speedGainPerCoin
         if not enemy:isDead() then
-            enemy.speed = BASE_ENEMY_SPEED * enemySpeedMultiplier
+            enemy.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
         end
 
         coin = spawnCoin()
@@ -214,28 +276,59 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
-    if key == "space" and not gameOver then
-        player:startAttack()
+    if gameState == "game" then
+        if key == "space" and not gameOver then
+            player:startAttack()
+        end
+
+        if key == "return" and gameOver then
+            -- reset current run, keep bestScores
+            startGame(currentDifficulty)
+        end
     end
+end
 
-    if key == "return" and gameOver then
-        -- reset current run, but keep bestScore
-        score = 0
-        gameOver = false
-        player.hp = player:getMaxHp()
-        player:resetPosition(WINDOW_WIDTH * 0.25, WINDOW_HEIGHT * 0.5)
-        player:setState("idle")
+function love.mousepressed(x, y, button)
+    if button ~= 1 then return end
+    if gameState ~= "menu" then return end
 
-        enemySpeedMultiplier = 1.0
-        enemy = spawnEnemy()
-        enemyRespawnTimer = 0
-
-        coin = spawnCoin()
+    for _, btn in ipairs(menuButtons) do
+        if btn:containsPoint(x, y) then
+            btn:click()
+            break
+        end
     end
 end
 
 function love.draw()
     love.graphics.clear(0.08, 0.09, 0.12)
+
+    if gameState == "menu" then
+        -- main menu
+        local title = "Reaper Game"
+        local font = love.graphics.getFont()
+        local tw = font:getWidth(title)
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.print(title, WINDOW_WIDTH / 2 - tw / 2, 120)
+
+        -- show best scores for each difficulty
+        local infoY = 160
+        love.graphics.print(
+            string.format("Easy: %d   Normal: %d   Hard: %d",
+                bestScores.easy, bestScores.normal, bestScores.hard),
+            WINDOW_WIDTH / 2 - 90,
+            infoY
+        )
+
+        for _, btn in ipairs(menuButtons) do
+            btn:draw()
+        end
+
+        love.graphics.setColor(1, 1, 1)
+        return
+    end
+
+    -- === GAMEPLAY DRAW ===
 
     -- simple grid background
     love.graphics.setColor(0.12, 0.15, 0.19)
@@ -266,14 +359,23 @@ function love.draw()
     love.graphics.setColor(1, 1, 1)
     love.graphics.rectangle("line", 0, 0, WINDOW_WIDTH, 40)
 
-    -- score + best score
+    -- score + best score (for current difficulty)
     love.graphics.print("Score: " .. tostring(score), 10, 10)
-    love.graphics.print("Best: "  .. tostring(bestScore), 120, 10)
+
+    local bestForDiff = currentDifficulty and bestScores[currentDifficulty] or 0
+    love.graphics.print("Best: "  .. tostring(bestForDiff), 120, 10)
+
+    -- difficulty label
+    if currentDifficulty then
+        local label = "Difficulty: " .. difficulties[currentDifficulty].label
+        love.graphics.print(label, 220, 10)
+    end
 
     -- HP hearts
     local hpText = "HP: "
-    love.graphics.print(hpText, 220, 10)
-    local offsetX = 220 + love.graphics.getFont():getWidth(hpText) + 10
+    local hpTextX = 400
+    love.graphics.print(hpText, hpTextX, 10)
+    local offsetX = hpTextX + love.graphics.getFont():getWidth(hpText) + 10
     for i = 1, player:getMaxHp() do
         if i <= player.hp then
             love.graphics.setColor(0.9, 0.2, 0.3)
@@ -291,8 +393,12 @@ function love.draw()
 
     if gameOver then
         local text = "You Died! Score: " .. tostring(score)
-            .. "  Best: " .. tostring(bestScore)
-            .. "  -  Press Enter to Restart"
+        if currentDifficulty then
+            text = text .. "  Best (" .. difficulties[currentDifficulty].label .. "): "
+                .. tostring(bestScores[currentDifficulty])
+        end
+        text = text .. "  -  Press Enter to Restart"
+
         local font = love.graphics.getFont()
         local tw = font:getWidth(text)
         local th = font:getHeight()
