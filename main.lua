@@ -62,7 +62,6 @@ local enemyImgs = { attack = nil, death = nil, summon = nil }
 local ENEMY1_SPAWN_X, ENEMY1_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.50
 local ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.25
 
--- menu background + pixel font
 local menuBg = nil
 local menuFont = nil
 local gameplayFont = nil
@@ -128,32 +127,21 @@ local function tileToWorldCenter(tx, ty)
 end
 
 local function drawEnemyPath(e, r, g, b)
-    if not e or not e.path or #e.path == 0 then
-        return
-    end
+    if not e or not e.path or #e.path == 0 then return end
 
     r = r or 0
     g = g or 1
     b = b or 0
 
     love.graphics.setColor(r, g, b, 0.5)
-
     for i, node in ipairs(e.path) do
         local cx, cy = tileToWorldCenter(node.tx, node.ty)
-
-        love.graphics.rectangle("line",
-            cx - TILE_SIZE / 2,
-            cy - TILE_SIZE / 2,
-            TILE_SIZE,
-            TILE_SIZE
-        )
-
+        love.graphics.rectangle("line", cx - TILE_SIZE / 2, cy - TILE_SIZE / 2, TILE_SIZE, TILE_SIZE)
         if i < #e.path then
             local nx, ny = tileToWorldCenter(e.path[i + 1].tx, e.path[i + 1].ty)
             love.graphics.line(cx, cy, nx, ny)
         end
     end
-
     love.graphics.setColor(1, 1, 1, 1)
 end
 
@@ -210,6 +198,135 @@ local function startGame(difficultyKey)
     effects = {}
 
     gameState = "game"
+end
+
+-- ==========================
+-- HUD helpers
+-- ==========================
+local function drawHeartShape(cx, cy, size, filled, dimmed)
+    local s = size or 10
+    local r = s * 0.38
+
+    if dimmed then
+        love.graphics.setColor(0.28, 0.28, 0.30)
+    else
+        if filled then love.graphics.setColor(0.92, 0.18, 0.30)
+        else love.graphics.setColor(0.35, 0.35, 0.38) end
+    end
+
+    local leftX  = cx - r
+    local rightX = cx + r
+    local topY   = cy - r * 0.2
+
+    if filled and not dimmed then
+        love.graphics.circle("fill", leftX, topY, r)
+        love.graphics.circle("fill", rightX, topY, r)
+        love.graphics.polygon("fill",
+            cx - 2*r, topY,
+            cx + 2*r, topY,
+            cx,       cy + 2.4*r
+        )
+        love.graphics.setColor(0, 0, 0, 0.18)
+        love.graphics.circle("line", leftX, topY, r)
+        love.graphics.circle("line", rightX, topY, r)
+        love.graphics.polygon("line",
+            cx - 2*r, topY,
+            cx + 2*r, topY,
+            cx,       cy + 2.4*r
+        )
+    else
+        love.graphics.circle("line", leftX, topY, r)
+        love.graphics.circle("line", rightX, topY, r)
+        love.graphics.polygon("line",
+            cx - 2*r, topY,
+            cx + 2*r, topY,
+            cx,       cy + 2.4*r
+        )
+    end
+
+    love.graphics.setColor(1, 1, 1, 1)
+end
+
+local function drawHud()
+    local barH = 44
+
+    -- top bar background
+    love.graphics.setColor(0, 0, 0, 0.55)
+    love.graphics.rectangle("fill", 0, 0, WINDOW_WIDTH, barH)
+    love.graphics.setColor(1, 1, 1, 0.18)
+    love.graphics.rectangle("line", 0, 0, WINDOW_WIDTH, barH)
+    love.graphics.setColor(1, 1, 1, 1)
+
+    local font = love.graphics.getFont()
+
+    -- LEFT: HP hearts (top-left)
+    local hpX = 14
+    local hpY = 14
+    local heartSize = 14
+    for i = 1, player:getMaxHp() do
+        local cx = hpX + (i - 1) * 26
+        local cy = hpY + 10
+        local filled = i <= player.hp
+        drawHeartShape(cx, cy, heartSize, filled, not filled)
+    end
+
+    -- MIDDLE: Score + Best (top-center)
+    local bestForDiff = currentDifficulty and (bestScores[currentDifficulty] or 0) or 0
+    local midText = "Score: " .. tostring(score) .. "    Best: " .. tostring(bestForDiff)
+    local midW = font:getWidth(midText)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.print(midText, WINDOW_WIDTH / 2 - midW / 2, 12)
+
+    -- RIGHT: Danger bar (with "Danger" left of bar)
+    do
+        local label = "Danger"
+        local labelW = font:getWidth(label)
+
+        local barW, barH2 = 170, 18
+        local barX = WINDOW_WIDTH - 14 - barW
+        local barY = 13
+
+        love.graphics.setColor(1, 1, 1, 0.9)
+        love.graphics.print(label, barX - labelW - 10, 12)
+
+        love.graphics.setColor(0.12, 0.12, 0.17)
+        love.graphics.rectangle("fill", barX, barY, barW, barH2)
+        love.graphics.setColor(1, 1, 1, 0.9)
+        love.graphics.rectangle("line", barX, barY, barW, barH2)
+
+        local level = (enemySpeedMultiplier - 1.0) / (DANGER_MAX_MULT - 1.0)
+        if level < 0 then level = 0 end
+        if level > 1 then level = 1 end
+
+        if level > 0 then
+            local fillW = barW * level
+            local r = 0.2 + 0.8 * level
+            local g = 0.9 - 0.7 * level
+            local b = 0.2
+            love.graphics.setColor(r, g, b)
+            love.graphics.rectangle("fill", barX + 1, barY + 1, math.max(0, fillW - 2), barH2 - 2)
+            love.graphics.setColor(1, 1, 1, 1)
+        end
+    end
+end
+
+local function drawControlsBottom()
+    local text = "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)   F1: Toggle Path Debug"
+    local font = love.graphics.getFont()
+    local tw = font:getWidth(text)
+
+    local pad = 8
+    local boxW = tw + 18
+    local boxH = font:getHeight() + 14
+    local x = WINDOW_WIDTH / 2 - boxW / 2
+    local y = WINDOW_HEIGHT - boxH - pad
+
+    love.graphics.setColor(0, 0, 0, 0.55)
+    love.graphics.rectangle("fill", x, y, boxW, boxH)
+    love.graphics.setColor(1, 1, 1, 0.18)
+    love.graphics.rectangle("line", x, y, boxW, boxH)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.print(text, x + 9, y + 7)
 end
 
 -- ==========================
@@ -552,64 +669,11 @@ function love.draw()
         if enemy2 then drawEnemyPath(enemy2, 0, 1, 1) end
     end
 
-    love.graphics.setColor(0, 0, 0, 0.5)
-    love.graphics.rectangle("fill", 0, 0, WINDOW_WIDTH, 40)
-    love.graphics.setColor(1, 1, 1)
-    love.graphics.rectangle("line", 0, 0, WINDOW_WIDTH, 40)
+    -- NEW HUD
+    drawHud()
 
-    love.graphics.print("Score: " .. tostring(score), 10, 10)
-
-    local bestForDiff = currentDifficulty and (bestScores[currentDifficulty] or 0) or 0
-    love.graphics.print("Best: " .. tostring(bestForDiff), 120, 10)
-
-    if currentDifficulty then
-        love.graphics.print("Difficulty: " .. difficulties[currentDifficulty].label, 220, 10)
-    end
-
-    local hpText = "HP: "
-    local hpTextX = 400
-    love.graphics.print(hpText, hpTextX, 10)
-    local offsetX = hpTextX + love.graphics.getFont():getWidth(hpText) + 10
-    for i = 1, player:getMaxHp() do
-        if i <= player.hp then love.graphics.setColor(0.9, 0.2, 0.3)
-        else love.graphics.setColor(0.3, 0.3, 0.3) end
-        love.graphics.circle("fill", offsetX + (i - 1) * 20, 20, 7)
-    end
-    love.graphics.setColor(1, 1, 1)
-
-    -- ✅ Danger bar restored
-    do
-        local barX, barY, barW, barH = 580, 10, 200, 20
-
-        love.graphics.setColor(0.12, 0.12, 0.17)
-        love.graphics.rectangle("fill", barX, barY, barW, barH)
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.rectangle("line", barX, barY, barW, barH)
-
-        local level = 0
-        if currentDifficulty then
-            level = (enemySpeedMultiplier - 1.0) / (DANGER_MAX_MULT - 1.0)
-            if level < 0 then level = 0 end
-            if level > 1 then level = 1 end
-        end
-
-        if level > 0 then
-            local fillW = barW * level
-            local r = 0.2 + 0.8 * level
-            local g = 0.9 - 0.7 * level
-            local b = 0.2
-            love.graphics.setColor(r, g, b)
-            love.graphics.rectangle("fill", barX + 1, barY + 1, math.max(0, fillW - 2), barH - 2)
-            love.graphics.setColor(1, 1, 1)
-        end
-
-        love.graphics.print("Danger", barX, barY - 12)
-    end
-
-    love.graphics.print(
-        "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)   F1: Toggle Path Debug",
-        350, 10
-    )
+    -- Controls at bottom center
+    drawControlsBottom()
 
     if gameOver then
         local text = "You Died! Score: " .. tostring(score)
