@@ -8,7 +8,7 @@ local SPRITE_SCALE       = 1
 local ENEMY_HITBOX_WIDTH  = 50
 local ENEMY_HITBOX_HEIGHT = 60
 
-local ENEMY_SPEED           = 70      -- base speed (will be overwritten by main via enemy.speed)
+local ENEMY_SPEED           = 70      -- base speed (overwritten by main via enemy.speed)
 local ENEMY_MAX_HP          = 3
 local ENEMY_ATTACK_COOLDOWN = 0.8     -- seconds between hits
 
@@ -17,7 +17,8 @@ local TILE_SIZE = 32
 local MAP_WIDTH  = 800   -- keep in sync with main.lua
 local MAP_HEIGHT = 600
 
-local PATH_RECALC_INTERVAL = 0.4  -- seconds between A* recalculations
+local PATH_RECALC_INTERVAL   = 0.5  -- seconds between A* recalculations
+local STRAIGHT_CHASE_DIST    = 96   -- if close, prefer direct chase even if minor obstacles
 
 -- 4-directional neighbors
 local NEIGHBORS = {
@@ -75,11 +76,79 @@ local function isTileBlocked(tx, ty, walls)
 end
 
 local function heuristic(tx1, ty1, tx2, ty2)
-    -- Manhattan heuristic works fine on grid, we could also use Euclidean
     local dx = math.abs(tx1 - tx2)
     local dy = math.abs(ty1 - ty2)
     return dx + dy
 end
+
+-- line / rect intersection helpers for line-of-sight -----------------------
+local function pointInRect(px, py, r)
+    return px >= r.x and px <= r.x + r.w and
+           py >= r.y and py <= r.y + r.h
+end
+
+local function segmentsIntersect(x1, y1, x2, y2, x3, y3, x4, y4)
+    local function cross(ax, ay, bx, by)
+        return ax * by - ay * bx
+    end
+
+    local function direction(ax, ay, bx, by, cx, cy)
+        return cross(cx - ax, cy - ay, bx - ax, by - ay)
+    end
+
+    local d1 = direction(x1, y1, x2, y2, x3, y3)
+    local d2 = direction(x1, y1, x2, y2, x4, y4)
+    local d3 = direction(x3, y3, x4, y4, x1, y1)
+    local d4 = direction(x3, y3, x4, y4, x2, y2)
+
+    local function between(a, b, c)
+        return math.min(a, b) <= c + 1e-6 and c <= math.max(a, b) + 1e-6
+    end
+
+    -- proper intersection
+    if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and
+       ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)) then
+        return true
+    end
+
+    -- collinear / overlapping cases
+    if d1 == 0 and between(x1, x2, x3) and between(y1, y2, y3) then return true end
+    if d2 == 0 and between(x1, x2, x4) and between(y1, y2, y4) then return true end
+    if d3 == 0 and between(x3, x4, x1) and between(y3, y4, y1) then return true end
+    if d4 == 0 and between(x3, x4, x2) and between(y3, y4, y2) then return true end
+
+    return false
+end
+
+local function lineIntersectsRect(x1, y1, x2, y2, r)
+    -- if either point is inside the rect, that's an intersection
+    if pointInRect(x1, y1, r) or pointInRect(x2, y2, r) then
+        return true
+    end
+
+    local rx1, ry1 = r.x,         r.y
+    local rx2, ry2 = r.x + r.w,   r.y
+    local rx3, ry3 = r.x + r.w,   r.y + r.h
+    local rx4, ry4 = r.x,         r.y + r.h
+
+    -- test segment vs each rectangle edge
+    if segmentsIntersect(x1, y1, x2, y2, rx1, ry1, rx2, ry2) then return true end
+    if segmentsIntersect(x1, y1, x2, y2, rx2, ry2, rx3, ry3) then return true end
+    if segmentsIntersect(x1, y1, x2, y2, rx3, ry3, rx4, ry4) then return true end
+    if segmentsIntersect(x1, y1, x2, y2, rx4, ry4, rx1, ry1) then return true end
+
+    return false
+end
+
+local function hasLineOfSight(sx, sy, tx, ty, walls)
+    for _, wall in ipairs(walls) do
+        if lineIntersectsRect(sx, sy, tx, ty, wall) then
+            return false
+        end
+    end
+    return true
+end
+-- -------------------------------------------------------------------------
 
 -- Basic A* pathfinding on walls grid
 local function findPath(startTx, startTy, goalTx, goalTy, walls)
@@ -89,8 +158,7 @@ local function findPath(startTx, startTy, goalTx, goalTy, walls)
     if not inBounds(startTx, startTy, cols, rows) then return nil end
     if not inBounds(goalTx,  goalTy,  cols, rows) then return nil end
 
-    -- If goal is inside a wall, we can still path to the closest neighbors, but
-    -- for simplicity we just early exit.
+    -- If goal is inside a wall, we skip (player shouldn't be in walls anyway)
     if isTileBlocked(goalTx, goalTy, walls) then
         return nil
     end
@@ -257,72 +325,99 @@ function Enemy:update(dt, player, walls)
         return
     end
 
-    -- ========== A* PATHFINDING ==========
+    ----------------------------------------------------------------
+    --           SMART DECISION: DIRECT CHASE vs A*               --
+    ----------------------------------------------------------------
 
-    self.pathRecalcTimer = self.pathRecalcTimer - dt
-    if self.pathRecalcTimer <= 0 then
-        self.pathRecalcTimer = PATH_RECALC_INTERVAL
+    local dxToPlayer = player.x - self.x
+    local dyToPlayer = player.y - self.y
+    local distToPlayer = length(dxToPlayer, dyToPlayer)
 
-        local startTx, startTy = worldToTile(self.x, self.y)
-        local goalTx,  goalTy  = worldToTile(player.x, player.y)
-
-        local newPath = findPath(startTx, startTy, goalTx, goalTy, walls)
-        if newPath and #newPath >= 2 then
-            self.path = newPath
-            self.pathIndex = 2  -- index 1 is our current tile, so move toward 2
-        else
-            -- no path found; clear
-            self.path = nil
-            self.pathIndex = 1
-        end
-    end
+    local hasLOS = hasLineOfSight(self.x, self.y, player.x, player.y, walls)
 
     local moveX, moveY = 0, 0
 
-    if self.path and self.path[self.pathIndex] then
-        local node = self.path[self.pathIndex]
-        local targetX, targetY = tileToWorldCenter(node.tx, node.ty)
+    -- If we have clear line-of-sight OR are very close, just go straight.
+    local useDirectChase = hasLOS or distToPlayer <= STRAIGHT_CHASE_DIST
 
-        local dx = targetX - self.x
-        local dy = targetY - self.y
-        local dist = length(dx, dy)
+    if useDirectChase then
+        -- clear path: we don't need grid path at all
+        self.path = nil
+        self.pathIndex = 1
 
-        if dist < 4 then
-            -- reached this node, go to next
-            self.pathIndex = self.pathIndex + 1
-            if not self.path[self.pathIndex] then
-                -- no more nodes; slightly step toward player directly
-                local ddx = player.x - self.x
-                local ddy = player.y - self.y
-                local nx, ny = normalize(ddx, ddy)
-                moveX = nx * self.speed * dt
-                moveY = ny * self.speed * dt
-            end
-        else
-            local nx, ny = normalize(dx, dy)
-            moveX = nx * self.speed * dt
-            moveY = ny * self.speed * dt
-        end
-
-        -- set facing based on horizontal direction to player (feels better visually)
-        local fdx = player.x - self.x
-        if fdx ~= 0 then
-            self.facing = (fdx < 0) and -1 or 1
-        end
-    else
-        -- fallback: straight chase if no path
-        local dx = player.x - self.x
-        local dy = player.y - self.y
-        local nx, ny = normalize(dx, dy)
+        local nx, ny = normalize(dxToPlayer, dyToPlayer)
         moveX = nx * self.speed * dt
         moveY = ny * self.speed * dt
 
-        if dx ~= 0 then
-            self.facing = (dx < 0) and -1 or 1
+        -- facing towards player
+        if dxToPlayer ~= 0 then
+            self.facing = (dxToPlayer < 0) and -1 or 1
+        end
+    else
+        -- No line-of-sight: use A* pathfinding
+        self.pathRecalcTimer = self.pathRecalcTimer - dt
+        if self.pathRecalcTimer <= 0 then
+            self.pathRecalcTimer = PATH_RECALC_INTERVAL
+
+            local startTx, startTy = worldToTile(self.x, self.y)
+            local goalTx,  goalTy  = worldToTile(player.x, player.y)
+
+            local newPath = findPath(startTx, startTy, goalTx, goalTy, walls)
+            if newPath and #newPath >= 2 then
+                self.path = newPath
+                self.pathIndex = 2  -- index 1 is our current tile, so move toward 2
+            else
+                -- no path found; clear
+                self.path = nil
+                self.pathIndex = 1
+            end
+        end
+
+        if self.path and self.path[self.pathIndex] then
+            local node = self.path[self.pathIndex]
+            local targetX, targetY
+
+            -- If we are at the last node, aim directly at the player for smoothness
+            if self.pathIndex == #self.path then
+                targetX, targetY = player.x, player.y
+            else
+                targetX, targetY = tileToWorldCenter(node.tx, node.ty)
+            end
+
+            local dx = targetX - self.x
+            local dy = targetY - self.y
+            local dist = length(dx, dy)
+
+            if dist < 4 then
+                -- reached this node, go to next
+                self.pathIndex = self.pathIndex + 1
+            else
+                local nx, ny = normalize(dx, dy)
+                moveX = nx * self.speed * dt
+                moveY = ny * self.speed * dt
+            end
+
+            -- facing: towards player horizontally (looks better)
+            if dxToPlayer ~= 0 then
+                self.facing = (dxToPlayer < 0) and -1 or 1
+            end
+        else
+            -- fallback: if no valid path (should be rare), just chase directly
+            local nx, ny = normalize(dxToPlayer, dyToPlayer)
+            moveX = nx * self.speed * dt
+            moveY = ny * self.speed * dt
+
+            if dxToPlayer ~= 0 then
+                self.facing = (dxToPlayer < 0) and -1 or 1
+            end
         end
     end
 
-    -- slide against walls (same style as before: move X then Y, with collision)
+    ----------------------------------------------------------------
+    --                  MOVEMENT + WALL SLIDING                   --
+    ----------------------------------------------------------------
+
+    -- move X axis then Y axis for sliding along walls
     self.x = self.x + moveX
     local box = self:getHitbox()
     for _, wall in ipairs(walls) do

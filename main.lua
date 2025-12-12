@@ -10,11 +10,11 @@ local HitEffect   = require("hiteffect")
 local WINDOW_WIDTH  = 800
 local WINDOW_HEIGHT = 600
 
-local TILE_SIZE           = 32   -- just for background grid
+local TILE_SIZE           = 32   -- just for background grid + path grid
 local PLAYER_FRAME_SIZE   = 96
 local ENEMY_FRAME_SIZE    = 100
 
-local ENEMY_RESPAWN_DELAY = 2.0  -- seconds after death before enemy respawns
+local ENEMY_RESPAWN_DELAY = 2.0  -- seconds after death before main enemy respawns
 
 -- chance that a heart spawns when picking up a coin (if HP < max and no heart present)
 local HEART_SPAWN_CHANCE = 0.25
@@ -24,6 +24,12 @@ local ENEMY_SWING_INTERVAL = 0.6
 
 -- how much speed multiplier counts as "max danger" visually
 local DANGER_MAX_MULT = 2.0
+
+-- spawn second enemy after this many coins
+local SECOND_ENEMY_SCORE_THRESHOLD = 30
+
+-- ========== DEBUG ==========
+local debugPath = false   -- F1 toggles drawing of A* paths
 
 -- game state
 local gameState = "menu"  -- "menu" | "game"
@@ -56,7 +62,10 @@ local bestScores = {
 }
 
 local player
-local enemy
+local enemy        -- main enemy (respawns)
+local enemy2       -- second enemy (spawns after 30 coins, does not respawn)
+local enemy2Spawned = false
+
 local coin
 local walls = {}
 local hearts = {}              -- list of heart pickups
@@ -143,6 +152,9 @@ local function startGame(difficultyKey)
     player = Player:new(WINDOW_WIDTH * 0.25, WINDOW_HEIGHT * 0.5, playerAnims)
     enemy  = spawnEnemy()
 
+    enemy2 = nil
+    enemy2Spawned = false
+
     walls = {
         Wall:new(150, 100, 500, 20),
         Wall:new(150, 480, 500, 20),
@@ -163,6 +175,46 @@ local function addEffectBurst(x, y, kind, count)
     for _ = 1, count do
         table.insert(effects, HitEffect:new(x, y, kind))
     end
+end
+
+-- helper for converting tile coords (from enemy.path) to world center
+local function tileToWorldCenter(tx, ty)
+    local x = (tx - 0.5) * TILE_SIZE
+    local y = (ty - 0.5) * TILE_SIZE
+    return x, y
+end
+
+-- draw A* path of one enemy (for debug)
+local function drawEnemyPath(e, r, g, b)
+    if not e or not e.path or #e.path == 0 then
+        return
+    end
+
+    r = r or 0
+    g = g or 1
+    b = b or 0
+
+    love.graphics.setColor(r, g, b, 0.5)
+
+    for i, node in ipairs(e.path) do
+        local cx, cy = tileToWorldCenter(node.tx, node.ty)
+
+        -- draw tile outline
+        love.graphics.rectangle("line",
+            cx - TILE_SIZE / 2,
+            cy - TILE_SIZE / 2,
+            TILE_SIZE,
+            TILE_SIZE
+        )
+
+        -- draw connection line to next node
+        if i < #e.path then
+            local nx, ny = tileToWorldCenter(e.path[i + 1].tx, e.path[i + 1].ty)
+            love.graphics.line(cx, cy, nx, ny)
+        end
+    end
+
+    love.graphics.setColor(1, 1, 1, 1)
 end
 
 -- ==========================
@@ -260,6 +312,10 @@ function love.update(dt)
 
     player:update(dt, walls)
     enemy:update(dt, player, walls)
+    if enemy2 then
+        enemy2:update(dt, player, walls)
+    end
+
     coin:update(dt)
 
     for _, heart in ipairs(hearts) do
@@ -280,7 +336,7 @@ function love.update(dt)
         end
     end
 
-    -- Enemy respawn logic (keeping speed multiplier)
+    -- Enemy respawn logic (only main enemy, keeps speed multiplier)
     if enemy:isDead() then
         enemyRespawnTimer = enemyRespawnTimer + dt
         if enemyRespawnTimer >= ENEMY_RESPAWN_DELAY then
@@ -291,20 +347,20 @@ function love.update(dt)
         enemyRespawnTimer = 0
     end
 
-    -- player vs enemy
+    -- player vs enemies
     local pBox = player:getHitbox()
-    local eBox = enemy:getHitbox()
+    local eBox1 = enemy:getHitbox()
+    local eBox2 = enemy2 and enemy2:getHitbox() or nil
 
-    -- 1) Player hitting enemy (only while attacking)
+    -- 1) Player hitting enemy 1 (only while attacking)
     if player:isAttacking() and not enemy:isDead() then
         local atkBox = player:getAttackHitbox()
-        if rectsOverlap(atkBox, eBox) then
+        if rectsOverlap(atkBox, eBox1) then
             local enemyWasDead = enemy:isDead()
             enemy:takeHit(1)
 
-            -- spawn hit or death effects at enemy center
-            local hitX = eBox.x + eBox.w / 2
-            local hitY = eBox.y + eBox.h / 2
+            local hitX = eBox1.x + eBox1.w / 2
+            local hitY = eBox1.y + eBox1.h / 2
             if enemy:isDead() and not enemyWasDead then
                 addEffectBurst(hitX, hitY, "death", 10)
             else
@@ -313,10 +369,27 @@ function love.update(dt)
         end
     end
 
-    -- 2) Enemy hitting player (only while attacking, with cooldown)
+    -- 1b) Player hitting enemy 2
+    if enemy2 and eBox2 and player:isAttacking() and not enemy2:isDead() then
+        local atkBox = player:getAttackHitbox()
+        if rectsOverlap(atkBox, eBox2) then
+            local enemy2WasDead = enemy2:isDead()
+            enemy2:takeHit(1)
+
+            local hitX = eBox2.x + eBox2.w / 2
+            local hitY = eBox2.y + eBox2.h / 2
+            if enemy2:isDead() and not enemy2WasDead then
+                addEffectBurst(hitX, hitY, "death", 10)
+            else
+                addEffectBurst(hitX, hitY, "hit", 6)
+            end
+        end
+    end
+
+    -- 2) Enemy 1 hitting player (only while attacking, with cooldown)
     if enemy.state == "attacking"
         and enemy.attackCooldown <= 0
-        and rectsOverlap(pBox, eBox)
+        and rectsOverlap(pBox, eBox1)
         and not player:isDead()
         and not enemy:isDead()
     then
@@ -329,6 +402,31 @@ function love.update(dt)
             end
             gameOver = true
             enemy:setState("death")
+            if enemy2 and not enemy2:isDead() then
+                enemy2:setState("death")
+            end
+        end
+    end
+
+    -- 2b) Enemy 2 hitting player
+    if enemy2 and eBox2
+        and enemy2.state == "attacking"
+        and enemy2.attackCooldown <= 0
+        and rectsOverlap(pBox, eBox2)
+        and not player:isDead()
+        and not enemy2:isDead()
+    then
+        enemy2.attackCooldown = 0.8
+        player:takeHit()
+        if player:isDead() then
+            if score > bestScores[currentDifficulty] then
+                bestScores[currentDifficulty] = score
+            end
+            gameOver = true
+            enemy2:setState("death")
+            if not enemy:isDead() then
+                enemy:setState("death")
+            end
         end
     end
 
@@ -350,6 +448,9 @@ function love.update(dt)
         if not enemy:isDead() then
             enemy.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
         end
+        if enemy2 and not enemy2:isDead() then
+            enemy2.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
+        end
 
         -- possibly spawn a heart if player is missing HP and no heart exists
         if player.hp < player:getMaxHp() and #hearts == 0 then
@@ -359,6 +460,14 @@ function love.update(dt)
         end
 
         coin = spawnCoin()
+
+        -- spawn second enemy after reaching score threshold (once)
+        if (not enemy2Spawned) and score >= SECOND_ENEMY_SCORE_THRESHOLD then
+            enemy2Spawned = true
+            enemy2 = spawnEnemy()
+            -- put second enemy a bit higher to separate them
+            enemy2.y = WINDOW_HEIGHT * 0.25
+        end
     end
 
     -- player vs hearts
@@ -387,7 +496,7 @@ function love.update(dt)
         end
     end
 
-    -- enemy swing sound: pulse while attacking
+    -- enemy swing sound: pulse while main enemy is attacking
     if sounds.enemySwing then
         if enemy:isDead() or enemy.state ~= "attacking" then
             if sounds.enemySwing:isPlaying() then
@@ -406,6 +515,11 @@ function love.update(dt)
 end
 
 function love.keypressed(key)
+    -- F1: toggle path debug
+    if key == "f1" then
+        debugPath = not debugPath
+    end
+
     if gameState == "game" then
         if key == "space" and not gameOver then
             if sounds.swordSwing then
@@ -459,6 +573,7 @@ function love.draw()
         end
 
         love.graphics.setColor(1, 1, 1)
+        love.graphics.print("F1: Toggle Path Debug (in game)", 10, WINDOW_HEIGHT - 30)
         return
     end
 
@@ -489,11 +604,24 @@ function love.draw()
         heart:draw()
     end
     enemy:draw()
+    if enemy2 then
+        enemy2:draw()
+    end
     player:draw()
 
     -- particle effects
     for _, eff in ipairs(effects) do
         eff:draw()
+    end
+
+    -- DEBUG: draw enemy paths
+    if debugPath then
+        -- main enemy path: green
+        drawEnemyPath(enemy, 0, 1, 0)
+        -- second enemy path: cyan
+        if enemy2 then
+            drawEnemyPath(enemy2, 0, 1, 1)
+        end
     end
 
     -- UI bar
@@ -562,7 +690,7 @@ function love.draw()
     end
 
     love.graphics.print(
-        "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)",
+        "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)   F1: Toggle Path Debug",
         350, 10
     )
 
