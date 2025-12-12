@@ -18,6 +18,7 @@ local ENEMY_FRAME_SIZE    = 100
 local ENEMY_RESPAWN_DELAY = 2.0
 local HEART_SPAWN_CHANCE  = 0.25
 local ENEMY_SWING_INTERVAL = 0.6
+
 local DANGER_MAX_MULT      = 2.0
 local SECOND_ENEMY_SCORE_THRESHOLD = 30
 
@@ -32,7 +33,6 @@ local difficulties = {
     hard = { label = "Hard",   baseEnemySpeed = 80, speedGainPerCoin = 1.03 },
 }
 
--- ✅ will be loaded from file on startup
 local bestScores = { easy = 0, normal = 0, hard = 0 }
 
 local player
@@ -61,6 +61,11 @@ local enemyImgs = { attack = nil, death = nil, summon = nil }
 
 local ENEMY1_SPAWN_X, ENEMY1_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.50
 local ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.25
+
+-- menu background + pixel font
+local menuBg = nil
+local menuFont = nil
+local gameplayFont = nil
 
 -- ==========================
 -- Utility
@@ -167,6 +172,14 @@ local function spawnEnemyAt(x, y)
     return e
 end
 
+local function commitBestIfNeeded()
+    if not currentDifficulty then return end
+    if score > (bestScores[currentDifficulty] or 0) then
+        bestScores[currentDifficulty] = score
+        Highscores.set(bestScores, currentDifficulty, score)
+    end
+end
+
 local function startGame(difficultyKey)
     currentDifficulty = difficultyKey
 
@@ -199,15 +212,6 @@ local function startGame(difficultyKey)
     gameState = "game"
 end
 
-local function commitBestIfNeeded()
-    if not currentDifficulty then return end
-    if score > (bestScores[currentDifficulty] or 0) then
-        bestScores[currentDifficulty] = score
-        -- ✅ persist to file
-        Highscores.set(bestScores, currentDifficulty, score)
-    end
-end
-
 -- ==========================
 -- LOVE callbacks
 -- ==========================
@@ -217,8 +221,18 @@ function love.load()
     love.graphics.setDefaultFilter("nearest", "nearest")
     math.randomseed(os.time())
 
-    -- ✅ load highscores from file
     bestScores = Highscores.load()
+
+    if love.filesystem.getInfo("assets/background.png") then
+        menuBg = love.graphics.newImage("assets/background.png")
+        menuBg:setFilter("nearest", "nearest")
+    end
+
+    gameplayFont = love.graphics.getFont()
+    if love.filesystem.getInfo("assets/Ithaca.ttf") then
+        menuFont = love.graphics.newFont("assets/Ithaca.ttf", 28)
+        menuFont:setFilter("nearest", "nearest")
+    end
 
     local idleImg   = love.graphics.newImage("assets/idle.png")
     local runImg    = love.graphics.newImage("assets/run.png")
@@ -355,9 +369,7 @@ function love.update(dt)
     end
 
     if player:isDead() then
-        -- ✅ save best score to disk
         commitBestIfNeeded()
-
         gameOver = true
         enemy:setState("death")
         if enemy2 and not enemy2:isDead() then enemy2:setState("death") end
@@ -473,28 +485,44 @@ function love.draw()
     love.graphics.clear(0.08, 0.09, 0.12)
 
     if gameState == "menu" then
+        if menuBg then
+            local sx = WINDOW_WIDTH / menuBg:getWidth()
+            local sy = WINDOW_HEIGHT / menuBg:getHeight()
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(menuBg, 0, 0, 0, sx, sy)
+
+            love.graphics.setColor(0, 0, 0, 0.45)
+            love.graphics.rectangle("fill", 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)
+            love.graphics.setColor(1, 1, 1, 1)
+        end
+
+        if menuFont then love.graphics.setFont(menuFont) end
+
         local title = "Reaper Game"
         local font = love.graphics.getFont()
         local tw = font:getWidth(title)
         love.graphics.setColor(1, 1, 1)
-        love.graphics.print(title, WINDOW_WIDTH / 2 - tw / 2, 120)
+        love.graphics.print(title, WINDOW_WIDTH / 2 - tw / 2, 110)
 
         local infoY = 160
-        love.graphics.print(
-            string.format("Best (Easy): %d   Best (Normal): %d   Best (Hard): %d",
-                bestScores.easy or 0, bestScores.normal or 0, bestScores.hard or 0),
-            WINDOW_WIDTH / 2 - 220,
-            infoY
+        local bestLine = string.format(
+            "Best (Easy): %d   Best (Normal): %d   Best (Hard): %d",
+            bestScores.easy or 0, bestScores.normal or 0, bestScores.hard or 0
         )
+        local bw = font:getWidth(bestLine)
+        love.graphics.print(bestLine, WINDOW_WIDTH / 2 - bw / 2, infoY)
 
         for _, btn in ipairs(menuButtons) do
             btn:draw()
         end
 
+        if gameplayFont then love.graphics.setFont(gameplayFont) end
         love.graphics.setColor(1, 1, 1)
         love.graphics.print("F1: Toggle Path Debug (in game)", 10, WINDOW_HEIGHT - 30)
         return
     end
+
+    if gameplayFont then love.graphics.setFont(gameplayFont) end
 
     love.graphics.setColor(0.12, 0.15, 0.19)
     for x = 0, WINDOW_WIDTH, TILE_SIZE * 2 do
@@ -548,6 +576,40 @@ function love.draw()
         love.graphics.circle("fill", offsetX + (i - 1) * 20, 20, 7)
     end
     love.graphics.setColor(1, 1, 1)
+
+    -- ✅ Danger bar restored
+    do
+        local barX, barY, barW, barH = 580, 10, 200, 20
+
+        love.graphics.setColor(0.12, 0.12, 0.17)
+        love.graphics.rectangle("fill", barX, barY, barW, barH)
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.rectangle("line", barX, barY, barW, barH)
+
+        local level = 0
+        if currentDifficulty then
+            level = (enemySpeedMultiplier - 1.0) / (DANGER_MAX_MULT - 1.0)
+            if level < 0 then level = 0 end
+            if level > 1 then level = 1 end
+        end
+
+        if level > 0 then
+            local fillW = barW * level
+            local r = 0.2 + 0.8 * level
+            local g = 0.9 - 0.7 * level
+            local b = 0.2
+            love.graphics.setColor(r, g, b)
+            love.graphics.rectangle("fill", barX + 1, barY + 1, math.max(0, fillW - 2), barH - 2)
+            love.graphics.setColor(1, 1, 1)
+        end
+
+        love.graphics.print("Danger", barX, barY - 12)
+    end
+
+    love.graphics.print(
+        "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)   F1: Toggle Path Debug",
+        350, 10
+    )
 
     if gameOver then
         local text = "You Died! Score: " .. tostring(score)
