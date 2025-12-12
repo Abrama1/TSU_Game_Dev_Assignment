@@ -47,7 +47,6 @@ local gameOver = false
 
 local playerAnims = {}
 
--- separate respawn timers
 local enemyRespawnTimer = 0
 local enemy2RespawnTimer = 0
 
@@ -57,10 +56,8 @@ local menuButtons = {}
 local sounds = {}
 local enemySwingTimer = 0
 
--- enemy images loaded once
 local enemyImgs = { attack = nil, death = nil, summon = nil }
 
--- spawn positions (keeps them separated)
 local ENEMY1_SPAWN_X, ENEMY1_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.50
 local ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.25
 
@@ -154,7 +151,6 @@ local function drawEnemyPath(e, r, g, b)
     love.graphics.setColor(1, 1, 1, 1)
 end
 
--- per-enemy animations (no shared state)
 local function makeEnemyAnims()
     return {
         attacking = Animation:new(enemyImgs.attack, ENEMY_FRAME_SIZE, ENEMY_FRAME_SIZE, 13, 6, 10, true),
@@ -274,7 +270,6 @@ function love.update(dt)
         end
     end
 
-    -- ✅ respawn logic: enemy1
     if enemy:isDead() then
         enemyRespawnTimer = enemyRespawnTimer + dt
         if enemyRespawnTimer >= ENEMY_RESPAWN_DELAY then
@@ -285,7 +280,6 @@ function love.update(dt)
         enemyRespawnTimer = 0
     end
 
-    -- ✅ respawn logic: enemy2 (only after it's spawned at least once)
     if enemy2Spawned then
         if enemy2 == nil then
             enemy2RespawnTimer = enemy2RespawnTimer + dt
@@ -434,8 +428,12 @@ function love.update(dt)
         end
     end
 
+    -- ✅ enemy swing sound: pulse if EITHER enemy is attacking (and alive)
     if sounds.enemySwing then
-        if enemy:isDead() or enemy.state ~= "attacking" then
+        local e1Attacking = enemy and (not enemy:isDead()) and enemy.state == "attacking"
+        local e2Attacking = enemy2 and (not enemy2:isDead()) and enemy2.state == "attacking"
+
+        if not (e1Attacking or e2Attacking) then
             if sounds.enemySwing:isPlaying() then
                 sounds.enemySwing:stop()
             end
