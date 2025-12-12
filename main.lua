@@ -6,6 +6,7 @@ local Animation   = require("animation")
 local Button      = require("button")
 local HeartPickup = require("heartpickup")
 local HitEffect   = require("hiteffect")
+local Highscores  = require("highscores")
 
 local WINDOW_WIDTH  = 800
 local WINDOW_HEIGHT = 600
@@ -31,6 +32,7 @@ local difficulties = {
     hard = { label = "Hard",   baseEnemySpeed = 80, speedGainPerCoin = 1.03 },
 }
 
+-- ✅ will be loaded from file on startup
 local bestScores = { easy = 0, normal = 0, hard = 0 }
 
 local player
@@ -49,7 +51,6 @@ local playerAnims = {}
 
 local enemyRespawnTimer = 0
 local enemy2RespawnTimer = 0
-
 local enemySpeedMultiplier = 1.0
 
 local menuButtons = {}
@@ -198,6 +199,15 @@ local function startGame(difficultyKey)
     gameState = "game"
 end
 
+local function commitBestIfNeeded()
+    if not currentDifficulty then return end
+    if score > (bestScores[currentDifficulty] or 0) then
+        bestScores[currentDifficulty] = score
+        -- ✅ persist to file
+        Highscores.set(bestScores, currentDifficulty, score)
+    end
+end
+
 -- ==========================
 -- LOVE callbacks
 -- ==========================
@@ -206,6 +216,9 @@ function love.load()
     love.window.setTitle("Sprite Sheet Game")
     love.graphics.setDefaultFilter("nearest", "nearest")
     math.randomseed(os.time())
+
+    -- ✅ load highscores from file
+    bestScores = Highscores.load()
 
     local idleImg   = love.graphics.newImage("assets/idle.png")
     local runImg    = love.graphics.newImage("assets/run.png")
@@ -307,32 +320,16 @@ function love.update(dt)
     if player:isAttacking() and not enemy:isDead() then
         local atkBox = player:getAttackHitbox()
         if rectsOverlap(atkBox, eBox1) then
-            local enemyWasDead = enemy:isDead()
             enemy:takeHit(1)
-
-            local hitX = eBox1.x + eBox1.w / 2
-            local hitY = eBox1.y + eBox1.h / 2
-            if enemy:isDead() and not enemyWasDead then
-                addEffectBurst(hitX, hitY, "death", 10)
-            else
-                addEffectBurst(hitX, hitY, "hit", 6)
-            end
+            addEffectBurst(eBox1.x + eBox1.w / 2, eBox1.y + eBox1.h / 2, "hit", 6)
         end
     end
 
     if enemy2 and eBox2 and player:isAttacking() and not enemy2:isDead() then
         local atkBox = player:getAttackHitbox()
         if rectsOverlap(atkBox, eBox2) then
-            local enemy2WasDead = enemy2:isDead()
             enemy2:takeHit(1)
-
-            local hitX = eBox2.x + eBox2.w / 2
-            local hitY = eBox2.y + eBox2.h / 2
-            if enemy2:isDead() and not enemy2WasDead then
-                addEffectBurst(hitX, hitY, "death", 10)
-            else
-                addEffectBurst(hitX, hitY, "hit", 6)
-            end
+            addEffectBurst(eBox2.x + eBox2.w / 2, eBox2.y + eBox2.h / 2, "hit", 6)
         end
     end
 
@@ -358,14 +355,12 @@ function love.update(dt)
     end
 
     if player:isDead() then
-        if score > bestScores[currentDifficulty] then
-            bestScores[currentDifficulty] = score
-        end
+        -- ✅ save best score to disk
+        commitBestIfNeeded()
+
         gameOver = true
         enemy:setState("death")
-        if enemy2 and not enemy2:isDead() then
-            enemy2:setState("death")
-        end
+        if enemy2 and not enemy2:isDead() then enemy2:setState("death") end
         return
     end
 
@@ -382,12 +377,8 @@ function love.update(dt)
         local cfg = difficulties[currentDifficulty]
         enemySpeedMultiplier = enemySpeedMultiplier * cfg.speedGainPerCoin
 
-        if not enemy:isDead() then
-            enemy.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
-        end
-        if enemy2 and not enemy2:isDead() then
-            enemy2.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
-        end
+        if not enemy:isDead() then enemy.speed = cfg.baseEnemySpeed * enemySpeedMultiplier end
+        if enemy2 and not enemy2:isDead() then enemy2.speed = cfg.baseEnemySpeed * enemySpeedMultiplier end
 
         if player.hp < player:getMaxHp() and #hearts == 0 then
             if math.random() < HEART_SPAWN_CHANCE then
@@ -428,15 +419,12 @@ function love.update(dt)
         end
     end
 
-    -- ✅ enemy swing sound: pulse if EITHER enemy is attacking (and alive)
     if sounds.enemySwing then
         local e1Attacking = enemy and (not enemy:isDead()) and enemy.state == "attacking"
         local e2Attacking = enemy2 and (not enemy2:isDead()) and enemy2.state == "attacking"
 
         if not (e1Attacking or e2Attacking) then
-            if sounds.enemySwing:isPlaying() then
-                sounds.enemySwing:stop()
-            end
+            if sounds.enemySwing:isPlaying() then sounds.enemySwing:stop() end
             enemySwingTimer = 0
         else
             enemySwingTimer = enemySwingTimer - dt
@@ -494,7 +482,7 @@ function love.draw()
         local infoY = 160
         love.graphics.print(
             string.format("Best (Easy): %d   Best (Normal): %d   Best (Hard): %d",
-                bestScores.easy, bestScores.normal, bestScores.hard),
+                bestScores.easy or 0, bestScores.normal or 0, bestScores.hard or 0),
             WINDOW_WIDTH / 2 - 220,
             infoY
         )
@@ -520,28 +508,20 @@ function love.draw()
     love.graphics.rectangle("line", 150, 100, 500, 400)
     love.graphics.setColor(1, 1, 1)
 
-    for _, wall in ipairs(walls) do
-        wall:draw()
-    end
+    for _, wall in ipairs(walls) do wall:draw() end
 
     coin:draw()
-    for _, heart in ipairs(hearts) do
-        heart:draw()
-    end
+    for _, heart in ipairs(hearts) do heart:draw() end
 
     enemy:draw()
     if enemy2 then enemy2:draw() end
     player:draw()
 
-    for _, eff in ipairs(effects) do
-        eff:draw()
-    end
+    for _, eff in ipairs(effects) do eff:draw() end
 
     if debugPath then
         drawEnemyPath(enemy, 0, 1, 0)
-        if enemy2 then
-            drawEnemyPath(enemy2, 0, 1, 1)
-        end
+        if enemy2 then drawEnemyPath(enemy2, 0, 1, 1) end
     end
 
     love.graphics.setColor(0, 0, 0, 0.5)
@@ -551,12 +531,11 @@ function love.draw()
 
     love.graphics.print("Score: " .. tostring(score), 10, 10)
 
-    local bestForDiff = currentDifficulty and bestScores[currentDifficulty] or 0
+    local bestForDiff = currentDifficulty and (bestScores[currentDifficulty] or 0) or 0
     love.graphics.print("Best: " .. tostring(bestForDiff), 120, 10)
 
     if currentDifficulty then
-        local label = "Difficulty: " .. difficulties[currentDifficulty].label
-        love.graphics.print(label, 220, 10)
+        love.graphics.print("Difficulty: " .. difficulties[currentDifficulty].label, 220, 10)
     end
 
     local hpText = "HP: "
@@ -564,50 +543,17 @@ function love.draw()
     love.graphics.print(hpText, hpTextX, 10)
     local offsetX = hpTextX + love.graphics.getFont():getWidth(hpText) + 10
     for i = 1, player:getMaxHp() do
-        if i <= player.hp then
-            love.graphics.setColor(0.9, 0.2, 0.3)
-        else
-            love.graphics.setColor(0.3, 0.3, 0.3)
-        end
+        if i <= player.hp then love.graphics.setColor(0.9, 0.2, 0.3)
+        else love.graphics.setColor(0.3, 0.3, 0.3) end
         love.graphics.circle("fill", offsetX + (i - 1) * 20, 20, 7)
     end
     love.graphics.setColor(1, 1, 1)
-
-    do
-        local barX, barY, barW, barH = 580, 10, 200, 20
-
-        love.graphics.setColor(0.12, 0.12, 0.17)
-        love.graphics.rectangle("fill", barX, barY, barW, barH)
-        love.graphics.setColor(1, 1, 1)
-        love.graphics.rectangle("line", barX, barY, barW, barH)
-
-        local level = (enemySpeedMultiplier - 1.0) / (DANGER_MAX_MULT - 1.0)
-        if level < 0 then level = 0 end
-        if level > 1 then level = 1 end
-
-        if level > 0 then
-            local fillW = barW * level
-            local r = 0.2 + 0.8 * level
-            local g = 0.9 - 0.7 * level
-            local b = 0.2
-            love.graphics.setColor(r, g, b)
-            love.graphics.rectangle("fill", barX + 1, barY + 1, math.max(0, fillW - 2), barH - 2)
-            love.graphics.setColor(1, 1, 1)
-        end
-
-        love.graphics.print("Danger", barX, barY - 12)
-    end
-
-    love.graphics.print(
-        "Move: WASD / Arrows   Attack: Space   Restart: Enter (after death)   F1: Toggle Path Debug",
-        350, 10
-    )
 
     if gameOver then
         local text = "You Died! Score: " .. tostring(score)
         if currentDifficulty then
             text = text .. "  Best (" .. difficulties[currentDifficulty].label .. "): "
-                .. tostring(bestScores[currentDifficulty])
+                .. tostring(bestScores[currentDifficulty] or 0)
         end
         text = text .. "  -  Press Enter to Restart"
 
