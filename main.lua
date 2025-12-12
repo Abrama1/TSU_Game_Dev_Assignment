@@ -46,15 +46,23 @@ local score = 0
 local gameOver = false
 
 local playerAnims = {}
+
+-- separate respawn timers
 local enemyRespawnTimer = 0
+local enemy2RespawnTimer = 0
+
 local enemySpeedMultiplier = 1.0
 
 local menuButtons = {}
 local sounds = {}
 local enemySwingTimer = 0
 
--- ✅ enemy images loaded once
+-- enemy images loaded once
 local enemyImgs = { attack = nil, death = nil, summon = nil }
+
+-- spawn positions (keeps them separated)
+local ENEMY1_SPAWN_X, ENEMY1_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.50
+local ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y = WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.25
 
 -- ==========================
 -- Utility
@@ -146,7 +154,7 @@ local function drawEnemyPath(e, r, g, b)
     love.graphics.setColor(1, 1, 1, 1)
 end
 
--- ✅ IMPORTANT: create fresh Animation objects per enemy (no shared state!)
+-- per-enemy animations (no shared state)
 local function makeEnemyAnims()
     return {
         attacking = Animation:new(enemyImgs.attack, ENEMY_FRAME_SIZE, ENEMY_FRAME_SIZE, 13, 6, 10, true),
@@ -155,9 +163,9 @@ local function makeEnemyAnims()
     }
 end
 
-local function spawnEnemy(x, y)
+local function spawnEnemyAt(x, y)
     local cfg = difficulties[currentDifficulty]
-    local e = Enemy:new(x or WINDOW_WIDTH * 0.75, y or WINDOW_HEIGHT * 0.5, makeEnemyAnims())
+    local e = Enemy:new(x, y, makeEnemyAnims())
     e.speed = cfg.baseEnemySpeed * enemySpeedMultiplier
     return e
 end
@@ -168,12 +176,14 @@ local function startGame(difficultyKey)
     score = 0
     gameOver = false
     enemySpeedMultiplier = 1.0
+
     enemyRespawnTimer = 0
+    enemy2RespawnTimer = 0
     enemySwingTimer = 0
 
     player = Player:new(WINDOW_WIDTH * 0.25, WINDOW_HEIGHT * 0.5, playerAnims)
 
-    enemy  = spawnEnemy(WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.5)
+    enemy  = spawnEnemyAt(ENEMY1_SPAWN_X, ENEMY1_SPAWN_Y)
     enemy2 = nil
     enemy2Spawned = false
 
@@ -211,7 +221,6 @@ function love.load()
     playerAnims.attack = Animation:new(attackImg, PLAYER_FRAME_SIZE, PLAYER_FRAME_SIZE, 7,  7,  16, false)
     playerAnims.hurt   = Animation:new(hurtImg,   PLAYER_FRAME_SIZE, PLAYER_FRAME_SIZE, 4,  4,  10, false)
 
-    -- ✅ load enemy images ONCE
     enemyImgs.attack = love.graphics.newImage("assets/attacking.png")
     enemyImgs.death  = love.graphics.newImage("assets/death.png")
     enemyImgs.summon = love.graphics.newImage("assets/summon.png")
@@ -265,14 +274,36 @@ function love.update(dt)
         end
     end
 
+    -- ✅ respawn logic: enemy1
     if enemy:isDead() then
         enemyRespawnTimer = enemyRespawnTimer + dt
         if enemyRespawnTimer >= ENEMY_RESPAWN_DELAY then
             enemyRespawnTimer = 0
-            enemy = spawnEnemy(WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.5)
+            enemy = spawnEnemyAt(ENEMY1_SPAWN_X, ENEMY1_SPAWN_Y)
         end
     else
         enemyRespawnTimer = 0
+    end
+
+    -- ✅ respawn logic: enemy2 (only after it's spawned at least once)
+    if enemy2Spawned then
+        if enemy2 == nil then
+            enemy2RespawnTimer = enemy2RespawnTimer + dt
+            if enemy2RespawnTimer >= ENEMY_RESPAWN_DELAY then
+                enemy2RespawnTimer = 0
+                enemy2 = spawnEnemyAt(ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y)
+            end
+        else
+            if enemy2:isDead() then
+                enemy2RespawnTimer = enemy2RespawnTimer + dt
+                if enemy2RespawnTimer >= ENEMY_RESPAWN_DELAY then
+                    enemy2RespawnTimer = 0
+                    enemy2 = spawnEnemyAt(ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y)
+                end
+            else
+                enemy2RespawnTimer = 0
+            end
+        end
     end
 
     local pBox = player:getHitbox()
@@ -374,7 +405,8 @@ function love.update(dt)
 
         if (not enemy2Spawned) and score >= SECOND_ENEMY_SCORE_THRESHOLD then
             enemy2Spawned = true
-            enemy2 = spawnEnemy(WINDOW_WIDTH * 0.75, WINDOW_HEIGHT * 0.25)
+            enemy2RespawnTimer = 0
+            enemy2 = spawnEnemyAt(ENEMY2_SPAWN_X, ENEMY2_SPAWN_Y)
         end
     end
 
